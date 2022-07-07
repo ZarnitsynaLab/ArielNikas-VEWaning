@@ -1,0 +1,352 @@
+---
+title: "Running an Example Analysis"
+author: "Ariel Nikas"
+date: "7/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#Load In Packages
+  library("survminer")
+  library("survival")
+```
+
+
+##Considering the Expected Value of VE in the Population - Equivalent to Figure 1 
+```{r}
+Scenario=read.csv("~/Desktop/Batch1-30Day23.csv") #Read In File, May Need to Change File Path
+#Make Individual Level Waning
+time1<-seq(1:60)
+Wane<-1-(1/60)*(time1-1)
+Wane<-append(Wane,rep(0,120))
+plot(seq(1:180), Wane*100, col="black", type="l", lwd=2, lty=2, ylab="VE %", xlab="Day of Epidemic", main="1 Day vs. 30 Day Spread Waning")
+
+#Find Population Average Waning, Spread Over 30 Days
+sus.groups<-sus.groups2<-matrix(data=NA, nrow=180, ncol=30)
+for(k in 1:30){
+  for(i in 1:180){
+    sus.groups[i,k]<-length(which(Scenario$vac_time==k & Scenario$vac_time<=i& Scenario$infected_time>i))
+  }
+}
+sus.groups2[,1]<-sus.groups[,1]*Wane
+for( k in 2:30){
+  Wane2<-append(rep(NA,(k-1)), Wane)
+  Wane2<-Wane2[1:180]
+  sus.groups2[,k]<-sus.groups[,k]*Wane2
+}
+sus.groups[which(sus.groups==0)]<-NA
+SpreadWane<-rep(NA,180)
+for( j in 1:180){
+  SpreadWane[j]<-sum(sus.groups2[j,],na.rm=T)/sum(sus.groups[j,], na.rm=T)
+}
+lines(seq(1:180), SpreadWane*100, lwd=2, col="purple")
+legend("topright", legend=c("Individual", "Population Average"), col=c("black", "purple"), lwd=2, lty=c(2,1), bty="n")
+```
+
+
+##Example Comparing the 3 Main Levels (as based on Halloran '97 & '99)
+```{r}
+#Read in Files & Set Parameters
+an=Scenario3=Scenario=read.csv("~/Desktop/Batch1-30Day23.csv") #This File Tracks Events & Status Per Person
+ScenarioEXP=read.csv("~/Desktop/Batch1-30Day123.csv") #This File Tracks Exposures/Infections Per Day
+mindays=1 #Sets the minimum number of days a bin can be
+minevents=700 #Sets the minimum number of events a bin must have (if last bin too small it merges with the one before it) Note: If this number is small, like 100, the code can take a while to run
+spread=30 #the number of days vaccination is spread over
+D=180 #how many days in the simulation?
+
+##--First: Reorganize Data, Find Expected Value, and Create 100 Event Bines
+an=subset(an,original_infectors==0)
+an$vac_status2=an$original_infectors=NULL
+#--Rearranging Information for Unvaccinated
+x1=subset(an,vac_status==0)
+x1$time1=1; x1$time2=x1$infected_time+0.5; x1$event=x1$ever_infected; x1$vac=0
+#Rearranging Information for Those Vaccinated After Day 1
+if( length(which(an$vac_status==1&an$vac_time>1))>=1){
+x2=subset(an,vac_status==1&vac_time>1)
+x2$time1=1; x2$time2=x2$vac_time; x2$event=0; x2$vac=0
+}
+#Rearranging Information For Those Vaccinated
+x3=subset(an,vac_status==1)
+x3$time1=x3$vac_time; x3$time2=x3$infected_time+0.5; x3$event=x3$ever_infected; x3$vac=1
+if(length(which(an$vac_status==1&an$vac_time>1))>=1){
+x=rbind(x1,x2,x3)}else{x=rbind(x1,x3)}
+x=x[order(x$id,x$time1),]
+x$time3=1; x$time4=x$time2-x$time1+1
+x$vac_status=x$ever_infected=x$infected_time=x$vac_time=NULL #x is dataset rearranged to work with coxph
+#!--Finding Expected Value
+rt=sapply(1:D,function(i){s=subset(x3,time1<=i&time2>i); mean(pmin(1,(i-s$time1)/60))})
+expected<-100*(1-rt)
+fit=coxph(Surv(time1,time2,event)~vac,x)
+zph=cox.zph(fit,'identity')
+
+
+###--Make Bins: Because the Cox Model is Based on Events This is Relatively Straightforward
+ut=c(unique(zph$x),Inf); LL=ut[1]; i=1; j=length(ut); mind=mindays; minn=minevents
+while(TRUE){
+ if(ut[j]-ut[i]<mind|sum(ut[i]<=zph$x)<minn){LL[length(LL)]=Inf; break}
+ for(newi in i:j) if(ut[newi]-ut[i]>=mind&sum(ut[i]<=zph$x&zph$x<ut[newi])>=minn) break
+ i=newi; LL=c(LL,ut[newi])
+}
+bins=cut(zph$x,LL,FALSE,right=FALSE); nbins=length(LL)-1
+time.cuts<-append(1,LL[2:nbins]+0.1)
+
+##--Find Level 3 (this was mostly done in the last few steps anyway)
+day<-tapply(zph$x,bins,mean); event.level3.SR<-(1-exp(tapply(zph$y,bins,mean)))*100
+
+
+##--FIND LEVEL ONE
+y.level1<-rep(NA,D)
+#Note: Columns are named by who gives to whom (i.e. unvac2vac_inf means an unvaccinated person infected a vaccinated person)
+v.exp<-ScenarioEXP$vac2vac_inf+ScenarioEXP$unv2vac_inf+ScenarioEXP$vac2vac_exp+ScenarioEXP$unv2vac_exp
+u.exp<-ScenarioEXP$unv2unv_inf+ScenarioEXP$vac2unv_inf+ScenarioEXP$unv2unv_exp+ScenarioEXP$vac2unv_exp
+  v.inf<-ScenarioEXP$vac2vac_inf+ScenarioEXP$unv2vac_inf
+  u.inf<-ScenarioEXP$unv2unv_inf+ScenarioEXP$vac2unv_inf
+event.level1<-rep(NA,length(time.cuts))
+for(j in 1:(length(time.cuts)-1)){
+  left<-time.cuts[j] #Find the left cutoff day
+  right<-time.cuts[(j+1)] #Find the right cut off day
+  #Calculate the VE value between the cut off points
+  event.uexp<-sum(u.exp[left:right])
+  event.vexp<-sum(v.exp[left:right])
+  event.uinf1<-sum(u.inf[left:right])
+  event.vinf1<-sum(v.inf[left:right])
+  event.level1[j]<-100*(1-((event.vinf1/event.vexp)/(event.uinf1/event.uexp)))
+}
+#Final Level 1 Time Cut
+  left<-time.cuts[length(time.cuts)]
+  right<-D
+  event.uexp<-sum(u.exp[left:right])
+  event.vexp<-sum(v.exp[left:right])
+  event.uinf1<-sum(u.inf[left:right])
+  event.vinf1<-sum(v.inf[left:right])
+  event.level1[length(time.cuts)]<-100*(1-((event.vinf1/event.vexp)/(event.uinf1/event.uexp)))
+
+
+##--FIND LEVEL 2
+v2.people<-u2.people<-v2.inf<-u2.inf<-rep(NA,D)
+for(i in 1:D){
+v2.people[i]<-length(which(Scenario$vac_time<=i & Scenario$vac_status==1 & Scenario$infected_time>i)) #people who are vaccinated by today, marked as being vaccinated, not yet infected
+if(spread==1){
+  u2.people[i]<-length(which(Scenario$vac_status==0 & Scenario$infected_time>i)) #If everyone vaccinated on day one, no worries
+  }else{ #worries, add in not yet vaccinated people to unvaccinated group to add into unvac time
+    u2.people[i]<-length(which(Scenario$vac_status==0 & Scenario$infected_time>i))+length(which(Scenario$vac_time>i & Scenario$vac_status==1 & Scenario$infected_time>i))
+  }
+
+v2.inf[i]<-length(which(Scenario$vac_status==1 & Scenario$infected_time==i))
+u2.inf[i]<-length(which(Scenario$vac_status==0 & Scenario$infected_time==i)) #adding in not yet vac doesn't matter here because they cannot get infected
+}
+event.level2<-rep(NA,length(time.cuts))#-Break up into 100 event sections
+for(j in 1:(length(time.cuts)-1)){
+  left<-time.cuts[j]
+  right<-time.cuts[(j+1)]
+  event.upt<-sum(u2.people[left:right])
+  event.vpt<-sum(v2.people[left:right])
+  event.uinf<-sum(u2.inf[left:right])
+  event.vinf<-sum(v2.inf[left:right])
+  event.level2[j]<-100*(1-((event.vinf/event.vpt)/(event.uinf/event.upt)))
+}
+#Final Level 2 Bin
+  left<-time.cuts[length(time.cuts)]
+  right<-D
+  event.upt<-sum(u2.people[left:right])
+  event.vpt<-sum(v2.people[left:right])
+  event.uinf<-sum(u2.inf[left:right])
+  event.vinf<-sum(v2.inf[left:right])
+  event.level2[length(time.cuts)]<-100*(1-((event.vinf/event.vpt)/(event.uinf/event.upt)))
+
+  
+#######----------------------------------Just Plotting
+plot(seq(1:180), expected, lwd=2, col="black", main="Example: Comparing Different Levels", ylab="VE %", xlab="Day of Epidemic", type="l")
+lines(day, event.level1, col="red", lwd=2, type="b")
+lines(day, event.level2, col="blue", lwd=2, type="b")
+lines(day, event.level3.SR, col="green", lwd=2, type="b")
+legend("topright", legend=c("True", "Level 1", "Level 2", "Level 3 (SR)"), col=c("black", "red", "blue", "green"), lwd=2, lty=1,bty="n")
+```
+
+
+##Example Comparing the Level 3 Methods
+```{r}
+an=Scenario3=read.csv("~/Desktop/Batch1-30Day23.csv") #ariel nikas's simulation
+ mind=7 #minimum day for bins
+ minn=100 #minimum events for bins
+
+
+rt0=c(seq(0.0,1.0,length.out=61),rep(1.0,119)) #hazard ratio over time since vaccination
+an=subset(an,original_infectors==0)
+an$vac_time[an$vac_time==0]=180; an$pv_time=an$vac_time
+an$vac_status2=an$original_infectors=an$pv_time=NULL
+x1=subset(an,vac_status==0)
+x1$time1=1; x1$time2=x1$infected_time+0.5; x1$event=x1$ever_infected; x1$vac=0
+if( length(which(an$vac_status==1&an$vac_time>1))>=1){#if spread=30
+x2=subset(an,vac_status==1&vac_time>1)
+x2$time1=1; x2$time2=x2$vac_time; x2$event=0; x2$vac=0
+}
+x3=subset(an,vac_status==1)
+x3$time1=x3$vac_time; x3$time2=x3$infected_time+0.5; x3$event=x3$ever_infected; x3$vac=1
+if( length(which(an$vac_status==1&an$vac_time>1))>=1){
+  x=rbind(x1,x2,x3)}else{x=rbind(x1,x3)}
+x=x[order(x$id,x$time1),]
+x$time3=1; x$time4=x$time2-x$time1+1
+x$vac_status=x$ever_infected=x$infected_time=x$vac_time=NULL #x is dataset rearranged to work with coxph
+
+rt=sapply(1:180,function(i){s=subset(x3,time1<=i&time2>i); mean(rt0[i-s$time1+1])}) #true hazard ratio
+plot(1:180,rt,xlab='Day of epidemic',ylab='1-VE',type='l',ylim=c(0,1.6))
+fit=coxph(Surv(time1,time2,event)~vac,x)
+zph=cox.zph(fit,'identity')
+
+ut=c(unique(zph$x),Inf); LL=ut[1]; i=1; j=length(ut)
+while(TRUE){
+ if(ut[j]-ut[i]<mind|sum(ut[i]<=zph$x)<minn){LL[length(LL)]=Inf; break}
+ for(newi in i:j) if(ut[newi]-ut[i]>=mind&sum(ut[i]<=zph$x&zph$x<ut[newi])>=minn) break
+ i=newi; LL=c(LL,ut[newi])
+}
+bins=cut(zph$x,LL,FALSE,right=FALSE); nbins=length(LL)-1
+
+
+
+lines(day<-tapply(zph$x,bins,mean), SR1<-exp(tapply(zph$y,bins,mean)),type='b',col="green") #hazard ratio estimated using schoenfeld residuals from zph
+ru=residuals(fit,'schoenfeld') #unscaled schoenfeld residuals
+tk=as.numeric(names(ru)); Bm=coef(fit); rh=exp(Bm); V=(ru>0)+0 #tk is infection times, V indicates whether infected was vaccinated (0=unvaccinated, 1=vaccinated)
+Z=sapply(unique(rank(tk,ties.method='min')),function(i) optimize(function(Z) (V[i]-exp(Bm)*Z/(exp(Bm)*Z+1-Z) - ru[i])^2 ,c(0,1),tol=1e-15)$min )
+Z=Z[as.numeric(factor(tk))] #proportion of never infected that are vaccinated (Z can easily be calculated directly but that does not account for ties)
+rs = (exp(Bm)*Z+1-Z)^2*ru/(exp(Bm)*Z*(1-Z)) + Bm #scaled schoenfeld residuals
+lines(day,SR2<-exp(tapply(rs,bins,mean)),type='b',col="darkgreen",pch=2) #hazard ratio estimated using schoenfeld residuals without constant variance approximation
+TSA=sapply(unique(bins),function(i){
+  Z=Z[bins==i]; V=V[bins==i]
+  optimize(function(ER) sum(rh*Z/(rh*Z+1-Z)+rh*Z*(1-Z)/(rh*Z+1-Z)^2*(log(ER)-Bm) - V)^2 ,c(0,2),tol=1e-15)$min
+})
+lines(day,TSA,type='b',col="purple",pch=3) #hazard ratio estimated using taylor series approximation
+y=survSplit(Surv(time1,time2,event)~.,x,cut=tapply(zph$x,bins,max)[-nbins],zero=1,episode='tcat') #dataset with time category
+vzm=sapply(1:nbins,function(i) coxph(Surv(time1,time2,event)~vac,subset(y,tcat==i))$coef[[1]] ) #fitting a separate cox model for each time category
+lines(day,SCM<-exp(vzm),type='b',col=3,lwd=2) #hazard ratio estimates using the separate cox models
+fit2=coxph(Surv(time1,time2,event)~vac:factor(tcat),y)
+TVI<-exp(coef(fit2))#hazard ratio estimates using time vaccine interaction term
+bins=as.numeric(factor(bins))
+sapply(unique(bins),function(i){
+  Z=Z[bins==i]; V=V[bins==i]
+  eq.TVI=sum(TVI[i]*Z/(TVI[i]*Z+1-Z))-sum(V) #equals 0 for TVI method, maximizes likelihood
+  eq.TSA=sum(rh*Z/(rh*Z+1-Z)+rh*Z*(1-Z)/(rh*Z+1-Z)^2*(log(TSA)[i]-Bm))-sum(V) #equals 0 for TSA method, taylor series approximation of eq.TVI
+  eq.SR2=sum((rh*Z+1-Z)/(rh*Z*(1-Z))*rh*Z+log(SR2)[i]-Bm)-sum((rh*Z+1-Z)^2/(rh*Z*(1-Z))*V) #equals 0 for SR2 method, weighting of eq.TSA
+  eq.SR1=sum(rh*Z/(rh*Z+1-Z)+(log(SR1)[i]-Bm)/fit$var[1,1]/fit$nevent)-sum(V) #equals 0 for SR1 method, replaces time varying 'variance' of V, rh*Z*(1-Z)/(rh*Z+1-Z)^2, in either eq.TSA or eq.SR2 with 1/fit$var[1,1]/fit$nevent
+  round(c(eq.TVI=eq.TVI,eq.TSA=eq.TSA,eq.SR2=eq.SR2,eq.SR1=eq.SR1),3)
+})
+
+
+
+
+
+plot(1:180,expected,xlab='Day of Epidemic',ylab='VE %',type='l',ylim=c(-50,100), main="Example: Level 3 Comparisons",cex.main=1.5, cex.axis=1.3, cex.lab=1.1, lwd=3)
+lines(day,(1-SR1)*100,type='b',col="green", lwd=3)#SR
+lines(day,(1-SR2)*100,type='b',col="forestgreen", lwd=3) #SRTV 
+lines(day,(1-TSA)*100,type='b',col="purple",pch=3, lty=2,lwd=3)
+lines(day,(1-TVI)*100,type='b',col="dodgerblue",lty=2, lwd=3) 
+legend("topright", legend= c("True", "Level 3 (SR)", "Level 3 (SRTV)", "Level 3 (TS)", "Level 3 (TVI)"), lwd=2, col=c("black", "green", "forestgreen", "purple", "dodgerblue"), pch=c(NA,1,1,3,1), bty="n")
+
+```
+
+##Example Optimization to Create Heat Maps
+```{r}
+
+D=180
+an=read.csv("~/Desktop/Batch1-30Day23.csv")
+an=subset(an,original_infectors==0)
+an$vac_status2=an$original_infectors=NULL
+#--Rearranging Information for Unvaccinated
+x1=subset(an,vac_status==0)
+x1$time1=1; x1$time2=x1$infected_time+0.5; x1$event=x1$ever_infected; x1$vac=0
+#Rearranging Information for Those Vaccinated After Day 1
+if( length(which(an$vac_status==1&an$vac_time>1))>=1){
+x2=subset(an,vac_status==1&vac_time>1)
+x2$time1=1; x2$time2=x2$vac_time; x2$event=0; x2$vac=0
+}
+#Rearranging Information For Those Vaccinated
+x3=subset(an,vac_status==1)
+x3$time1=x3$vac_time; x3$time2=x3$infected_time+0.5; x3$event=x3$ever_infected; x3$vac=1
+if(length(which(an$vac_status==1&an$vac_time>1))>=1){
+x=rbind(x1,x2,x3)}else{x=rbind(x1,x3)}
+x=x[order(x$id,x$time1),]
+x$time3=1; x$time4=x$time2-x$time1+1
+x$vac_status=x$ever_infected=x$infected_time=x$vac_time=NULL #x is dataset rearranged to work with coxph
+#!--Finding Expected Value
+rt=sapply(1:D,function(i){s=subset(x3,time1<=i&time2>i); mean(pmin(1,(i-s$time1)/60))})
+expected<-100*(1-rt)
+fit=coxph(Surv(time1,time2,event)~vac,x)
+zph=cox.zph(fit,'identity')
+###
+
+
+
+######## Finding Minimum AIC ###############
+daystested <-seq(1,10,1) 
+minpointstested <-seq(100,1200,100) 
+
+data<-error.AIC<-error.weighted<-error.notweighted <- matrix(0,length(daystested),length(minpointstested))
+ for (k in 1:length(daystested)) {
+         for(m in 1:length(minpointstested)) {
+     
+           ut=c(unique(zph$x),300); LL=ut[1]; i=1; j=length(ut); mind=daystested[k]; minn=minpointstested[m]
+while(TRUE){
+ if(ut[j]-ut[i]<mind|sum(ut[i]<=zph$x)<minn){LL[length(LL)]=Inf; break}
+ for(newi in i:j) if(ut[newi]-ut[i]>=mind&sum(ut[i]<=zph$x&zph$x<ut[newi])>=minn) break
+ i=newi; LL=c(LL,ut[newi])
+}
+           LL[which(LL==Inf)]<-180
+bins=cut(zph$x,LL,FALSE,right=FALSE); nbins=length(LL)-1
+if (nbins>1){ #If everything is fine, do normally
+binsY = bins; nbinsY=nbins; time.vz<-tapply(zph$x,binsY,mean)
+xsplitY=survSplit(Surv(time1,time2,event)~.,x,cut=LL[2:nbins]+0.1,zero=1,episode='tcat') #dataset with time category
+fit=coxph(Surv(time1,time2,event)~vac:factor(tcat),xsplitY)
+time.cuts<-append(1,LL[2:nbins]+0.1)
+}else if(LL==180){ #If your only cut is at 180 (which if you are looking at a reasonable epidemic shouldnt happen), then actually it's 1 to 180
+  LL=c(1,180)
+            binsY = bins; nbinsY=1; time.vz<-tapply(zph$x,binsY,mean)
+xsplitY=survSplit(Surv(time1,time2,event)~.,x,cut=LL[1:2]+0.1,zero=1,episode='tcat') #dataset with time category
+fit=coxph(Surv(time1,time2,event)~vac:factor(tcat),xsplitY)
+time.cuts<-LL+0.1
+         }
+           else{ 
+             binsY = bins; nbinsY=1; time.vz<-tapply(zph$x,binsY,mean)
+xsplitY=survSplit(Surv(time1,time2,event)~.,x,cut=LL[1:2]+0.1,zero=1,episode='tcat') #dataset with time category
+fit=coxph(Surv(time1,time2,event)~vac:factor(tcat),xsplitY)
+time.cuts<-append(1,LL+0.1)}
+cutsvalues<-round(time.cuts)
+
+time.vz.opt<-time.vz
+VE.opt<-(1-(exp(coef(fit))))*100
+
+##---Now Calculate All Errors By First Making the Step Function Using the Data Out
+if(is.na(VE.opt[1])==T){
+  VE.opt<-VE.opt[-1]
+}
+VE.stepper<-c(0)
+for( g in 1:(length(cutsvalues)-1)){
+VE.stepper[cutsvalues[g]:cutsvalues[g+1]]<-rep(VE.opt[g])
+}
+VE.stepper[length(VE.stepper):180]<-VE.opt[length(VE.opt)]
+
+  cost.in<-rep(0,D)
+cost2.in<-rep(0,D)
+for( i in 1:179){#FIND THE DIFFERENCE IN EXPECTED VALUE AND THE STEPPED VALUE THEN WEIGHT BY HOW MANY INFECTION ON THAT DAY
+  cost.in[i]<-(((1-rt[i])*100-VE.stepper[i])^2)*(length(which(an$infected_time==i)))
+  cost2.in[i]<-(((1-rt[i])*100-VE.stepper[i])^2)
+}
+
+
+#Save Errors in Matrix
+error.weighted[k,m]<-sum(cost.in, na.rm=TRUE) #Weighted Error
+error.notweighted[k,m]<-sum(cost2.in, na.rm=TRUE)
+error.AIC[k,m]<-AIC(fit) #AIC
+
+
+}
+}
+
+plot(1:180, (1-rt)*100, type="l", main="Example: Stepped Function To Find Optimal Partition", ylab="VE %", xlab="Day of Epidemic")
+#lines(time.vz, (1-(exp(coef(fit))))*100, type="b", lwd=2, col="purple")
+lines(seq(1:D), VE.stepper, col="blue")
+```
+
