@@ -1,4 +1,6 @@
 # ArielNikas-VEWaning
+This code is for reproducing the work found in "Estimating Waning of Vaccine Effectiveness: A Simulation Study" published in Clinical Infectious Diseases. (Clin Infect Dis. 2023 Feb 8;76(3):479-486. doi: 10.1093/cid/ciac725.)
+
 For VE waning project focused on comparing methods using an ABM. This constitutes 3 main parts:
 
 1)Julia code for running the simulation, the code gives a single example simulation for 100-0% waning and 30 day spread vaccination. Please note that this example simulation will creat two files begining with "Example-30Day" in your current working directory. To find your current working directory use the pwd() command in julia.  Included is the basic simulation used through most of the paper. Julia files end in .jl while files that describe packages, versions, and the general environment are found in the .toml files. 
